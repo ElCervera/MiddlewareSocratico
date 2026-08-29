@@ -2,6 +2,7 @@ import os
 os.environ["CHAINLIT_NO_DATA_LAYER"] = "true"
 import re
 import logging
+from typing import Optional
 from dotenv import load_dotenv
 import chainlit as cl
 from chainlit.input_widget import Select
@@ -15,6 +16,7 @@ from config.model_factory import (
     MODELOS_DISPONIBLES,
     MODELO_POR_DEFECTO,
 )
+from services.user_service import autenticar_o_registrar
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +176,39 @@ RESPUESTA_RESPALDO = (
 
 
 # ============================================================================
+# Autenticación de Chainlit (Sprint 1)
+# ============================================================================
+
+
+@cl.password_auth_callback
+def auth_callback(username: str, password: str) -> Optional[cl.User]:
+    """
+    Callback de autenticación de Chainlit.
+
+    Recibe username (email) y contraseña del formulario de login.
+    Autentica al usuario si existe, o lo registra automáticamente si es nuevo.
+
+    Args:
+        username: Correo electrónico del estudiante.
+        password: Contraseña enviada.
+
+    Returns:
+        Instancia de cl.User si fue exitoso, None si falló.
+    """
+    user_db = autenticar_o_registrar(username, password)
+    if user_db:
+        return cl.User(
+            identifier=user_db.email,
+            metadata={
+                "user_id": str(user_db.id),
+                "nombre": user_db.nombre or user_db.email.split("@")[0].capitalize(),
+                "email": user_db.email,
+            },
+        )
+    return None
+
+
+# ============================================================================
 # Handlers de Chainlit
 # ============================================================================
 
@@ -182,9 +217,20 @@ RESPUESTA_RESPALDO = (
 async def on_chat_start():
     """
     Manejador que se ejecuta cuando un usuario inicia una nueva conversación.
-    Muestra un mensaje de bienvenida, configura el selector de modelos
-    y almacena el modelo activo en la sesión.
+    Muestra un mensaje de bienvenida personalizado, configura el selector de modelos
+    y almacena el usuario activo en la sesión.
     """
+    # --- Recuperar datos del usuario autenticado ---
+    usuario_auth = cl.user_session.get("user")
+    nombre_estudiante = "Estudiante"
+    user_id = None
+
+    if usuario_auth and usuario_auth.metadata:
+        user_id = usuario_auth.metadata.get("user_id")
+        nombre_estudiante = usuario_auth.metadata.get("nombre", "Estudiante")
+
+    cl.user_session.set("user_id", user_id)
+
     # --- Selector de modelos (dropdown) ---
     modelo_inicial = os.getenv("ACTIVE_MODEL", MODELO_POR_DEFECTO)
     opciones_modelos = list(MODELOS_DISPONIBLES.keys())
@@ -225,9 +271,8 @@ async def on_chat_start():
     nombre_modelo = get_nombre_modelo(modelo_seleccionado)
 
     mensaje_bienvenida = (
-        "# 🎓 **¡Bienvenido al Tutor Socrático de Programación e Ingeniería de Software!** 🧠\n\n"
-        "Soy tu tutor virtual y te ayudaré a **aprender a pensar como ingeniero/a de software**, "
-        "usando el método socrático.\n\n"
+        f"# 🎓 **¡Bienvenido/a, {nombre_estudiante}!** 🧠\n\n"
+        "Soy tu tutor virtual socrático y te ayudaré a **aprender a pensar como ingeniero/a de software**.\n\n"
         f"**Modelo activo:** {nombre_modelo}\n\n"
         "> 💡 *Puedes cambiar el modelo en cualquier momento usando el ícono de "
         "configuración (⚙️) en la barra del chat.*\n\n"
