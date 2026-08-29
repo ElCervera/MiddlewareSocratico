@@ -1,4 +1,5 @@
 import os
+os.environ["CHAINLIT_NO_DATA_LAYER"] = "true"
 import re
 import logging
 from dotenv import load_dotenv
