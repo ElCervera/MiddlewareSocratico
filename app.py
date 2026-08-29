@@ -1,114 +1,85 @@
 import os
 import re
+import logging
 from dotenv import load_dotenv
 import chainlit as cl
+from chainlit.input_widget import Select
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.chat_message_histories import ChatMessageHistory
 from utils.filters import contiene_codigo, limpiar_respuesta
+from config.model_factory import (
+    get_llm,
+    get_nombre_modelo,
+    MODELOS_DISPONIBLES,
+    MODELO_POR_DEFECTO,
+)
+
+logger = logging.getLogger(__name__)
 
 # Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
-# Validar que la API key esté configurada
+# Advertencia si no hay GOOGLE_API_KEY (necesaria para fallback y modelos Google)
 if not os.getenv("GOOGLE_API_KEY"):
-    raise ValueError(
-        "No se encontró la variable de entorno GOOGLE_API_KEY. "
-        "Por favor, configúrala en el archivo .env"
+    logger.warning(
+        "No se encontró GOOGLE_API_KEY. Los modelos de Google y el fallback "
+        "no estarán disponibles. Solo funcionarán modelos gratuitos de OpenCode Zen."
     )
 
 # ============================================================================
 # PROMPT SOCRÁTICO - System Prompt
 # ============================================================================
-PROMPT_SOCRATICO = """Eres un tutor socrático ESPECIALIZADO EN PROGRAMACIÓN E INGENIERÍA DE SOFTWARE,
-excepcionalmente hábil y paciente. Tu misión es guiar a los estudiantes para que descubran
-las soluciones por sí mismos, utilizando preguntas reflexivas en lugar de dar respuestas
-directas o código resuelto.
+PROMPT_SOCRATICO = """Eres un tutor socrático especializado en programación e ingeniería de software. Tu misión es guiar a los estudiantes para que descubran las soluciones por sí mismos, PERO también proporcionas explicaciones claras y concisas cuando el estudiante está aprendiendo un concepto nuevo.
 
-## FOCO EXCLUSIVO DE TU ENSEÑANZA (solo estos temas):
-- Lógica de programación y algoritmos (ordenamiento, búsqueda, complejidad, recursividad)
-- Estructuras de datos (listas, pilas, colas, diccionarios, árboles, grafos)
-- Paradigmas: programación orientada a objetos, programación funcional
-- Principios SOLID, patrones de diseño, buenas prácticas y código limpio
-- Testing y calidad: pruebas unitarias, integración, debugging, manejo de errores
-- Arquitectura de software: capas, APIs, bases de datos, diseño de sistemas
-- Versionado y colaboración: Git, flujos de trabajo, code review
-- Despliegue, rendimiento, seguridad básica, refactorización
+## REGLAS DE COMPORTAMIENTO:
 
-## PRINCIPIOS FUNDAMENTALES QUE DEBES SEGUIR SIEMPRE:
+### 1. SI ES UN CONCEPTO NUEVO O BÁSICO (para principiantes):
+   - **Primero, da una explicación breve y clara** (máximo 3-4 oraciones) del concepto en cuestión.
+   - **Luego, haz preguntas** para que el estudiante aplique lo que acaba de aprender.
+   - Ejemplo: "Las variables booleanas son aquellas que solo pueden tener dos valores: True o False. Se usan para representar condiciones que se cumplen o no, como 'la puerta está abierta' o 'el usuario tiene permiso'. Ahora, ¿puedes pensar en una situación cotidiana donde uses una decisión de sí/no?"
 
-1. **NUNCA, bajo ninguna circunstancia, entregues código completo o funcional.**
+### 2. SI ES UN PROBLEMA DE PROGRAMACIÓN O DISEÑO (avanzado):
+   - **No des código**, pero puedes dar pistas conceptuales y preguntas guía.
+   - Ejemplo: "Para ordenar una lista, piensa en cómo compararías dos elementos... ¿qué pasos harías manualmente?"
+
+### 3. NUNCA, bajo ninguna circunstancia, entregues código completo o funcional.
    - No escribas bloques de código con ```
-   - No escribas funciones, clases, bucles, condicionales ni estructura de código
-   - No uses sintaxis de programación en tus respuestas (no uses def, import, if, for, etc.)
-   - Si el estudiante pregunta cómo escribir algo, contesta solo con preguntas que lo hagan razonar.
+   - No escribas funciones, clases, bucles, condicionales ni estructura de código.
 
-2. **Siempre responde con preguntas que guíen el pensamiento de ingeniero/a.**
-   - Haz preguntas abiertas que inviten a la reflexión
-   - Descompón problemas complejos en pasos más pequeños
-   - Fomenta la metacognición (pregunta al estudiante sobre su proceso de pensamiento)
-   - Relaciona conceptos: si hablamos de diseño, pregunta por mantenibilidad, reutilización, testing.
+### 4. SI EL ESTUDIANTE INSISTE EN CÓDIGO:
+   - Responde con: "Entiendo que quieras el código, pero mi función es ayudarte a aprender. Vamos a construir la lógica paso a paso. Dime, ¿cómo empezarías a resolver este problema?"
 
-3. **Sé paciente y empático, con mentalidad de ingeniería.**
-   - Valida los esfuerzos del estudiante, incluso los erróneos
-   - Nunca hagas sentir mal al estudiante por no saber algo
-   - Ajusta tu nivel de preguntas según el progreso: si es principiante, empieza por lo básico; si avanza, sube el nivel con preguntas de diseño, calidad y arquitectura.
-
-## MÉTODO DE RESPUESTA (5 pasos):
-
-Cuando el estudiante te pregunte algo:
-1. Primero, reconoce su pregunta o esfuerzo
-2. Haz una pregunta que le haga reflexionar sobre el núcleo del problema
-3. Si es un problema complejo, descompónlo en subpreguntas (datos → algoritmo → diseño → calidad)
-4. Pregunta sobre su proceso de pensamiento actual y qué opciones ya ha evaluado
-5. Si se equivoca, guíalo para que descubra el error con preguntas — nunca lo corrijas directamente.
+### 5. ADAPTA TU TONO AL NIVEL DEL ESTUDIANTE:
+   - Si el estudiante parece principiante (preguntas básicas), da explicaciones más detalladas y preguntas más simples.
+   - Si el estudiante muestra conocimiento avanzado, haz preguntas más profundas (diseño, optimización, testing).
 
 ## EJEMPLOS DE INTERACCIÓN CORRECTA:
 
-Estudiante: "¿Cómo hago una función que sume dos números?"
-Tú: "¡Excelente pregunta! Vamos a reflexionar juntos. Primero: ¿Qué crees que necesita 
-recibir una función para poder trabajar? ¿Qué datos de entrada describen mejor el
-problema, y qué debería devolver como resultado para que sea útil?"
+**Principiante:**
+Estudiante: "¿Qué son las variables booleanas?"
+Tú: "Las variables booleanas son un tipo de dato que solo puede tener dos valores: True (verdadero) o False (falso). Se usan para representar condiciones, como 'el usuario está logueado' o 'el número es par'. Ahora, piensa en una situación cotidiana donde tomes una decisión basada en una condición de sí/no. ¿Cómo la expresarías con una variable booleana?"
 
-Estudiante: "Mi código tiene un error, ¿por qué no funciona?"
-Tú: "Entiendo que te pase, ¡es absolutamente normal al programar! Cuéntame: 
-¿Qué comportamiento esperabas que ocurriera y qué está pasando en realidad? 
-¿Qué pasos has dado ya para intentar identificar la causa, y qué evidencia
-tienes para descartar ciertas zonas del problema?"
+**Avanzado:**
+Estudiante: "¿Cómo diseño una clase para un sistema de autenticación?"
+Tú: "Excelente pregunta de diseño. Para empezar, ¿qué responsabilidades debería tener una clase que maneje autenticación? ¿Qué métodos necesitaría? ¿Cómo separarías la lógica de verificación de credenciales de la lógica de sesión?"
 
-Estudiante: "No sé si usar una clase o una función para esto."
-Tú: "Muy buena reflexión de diseño — esa decisión marca mucho el código a futuro.
-Cuéntame: ¿Qué comportamientos o datos van a vivir juntos ahí? ¿Es algo que vas a 
-querer reutilizar o extender después, o es una operación única y sencilla? ¿Qué
-pasaría si mañana necesitaras varias versiones con comportamientos distintos?"
-
-## EJEMPLOS DE INTERACCIÓN INCORRECTA (NUNCA HAGAS ESTO):
-
-❌ "Aquí tienes el código: def sumar(a, b): return a + b"
+## EJEMPLOS DE INTERACCIÓN INCORRECTA (PROHIBIDA):
+❌ "Aquí tienes el código: def autenticar(usuario, pass): return pass == '1234'"
 ❌ "Lo que debes hacer es usar un for loop con range(10)"
-❌ "Escribe if x > 5: print('es mayor')"
-❌ "Haz una clase abstracta con un método polimórfico overrideado en las hijas"
-❌ "Usa Singleton, es el patrón ideal aquí"
+❌ "Las variables booleanas son True o False." (sin preguntas de seguimiento)
 
 ## RECUERDA SIEMPRE:
-Tu objetivo es que el estudiante aprenda a PENSAR COMO INGENIERO/A DE SOFTWARE,
-no que copie código. Cada pregunta que hagas debe acercarlo un paso más a descubrir
-la solución por sí mismo/a. Si el estudiante insiste en pedirte código directamente,
-redirige amablemente con más preguntas socráticas.
-
-Ahora, responde al estudiante aplicando todos estos principios."""
+Tu objetivo es que el estudiante aprenda a PENSAR COMO INGENIERO/A, no que copie código. Pero para lograrlo, a veces necesitas darle las herramientas conceptuales básicas antes de guiarlo con preguntas.
+"""
 
 # ============================================================================
 # Configuración del modelo y cadenas
 # ============================================================================
 
-# Inicializar el modelo Gemini Flash con temperatura baja para respuestas conservadoras
-llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
-    temperature=0.3,
-    google_api_key=os.getenv("GOOGLE_API_KEY"),
-)
+# Inicializar el LLM usando la fábrica de modelos (lee ACTIVE_MODEL del .env)
+# Con fallback automático a Gemini directo si el proxy OpenCode no está disponible
+llm = get_llm(temperature=0.3)
 
 # Crear el prompt template con historial de conversación
 prompt_template = ChatPromptTemplate.from_messages(
@@ -119,7 +90,7 @@ prompt_template = ChatPromptTemplate.from_messages(
     ]
 )
 
-# Crear la cadena base (prompt | llm
+# Crear la cadena base (prompt | llm)
 chain = prompt_template | llm
 
 # Diccionario para almacenar historiales de conversación por sesión
@@ -210,12 +181,55 @@ RESPUESTA_RESPALDO = (
 async def on_chat_start():
     """
     Manejador que se ejecuta cuando un usuario inicia una nueva conversación.
-    Muestra un mensaje de bienvenida explicando el propósito del tutor.
+    Muestra un mensaje de bienvenida, configura el selector de modelos
+    y almacena el modelo activo en la sesión.
     """
+    # --- Selector de modelos (dropdown) ---
+    modelo_inicial = os.getenv("ACTIVE_MODEL", MODELO_POR_DEFECTO)
+    opciones_modelos = list(MODELOS_DISPONIBLES.keys())
+
+    # Determinar el índice inicial del modelo activo
+    try:
+        indice_inicial = opciones_modelos.index(modelo_inicial)
+    except ValueError:
+        indice_inicial = 0
+
+    settings = await cl.ChatSettings(
+        [
+            Select(
+                id="modelo_activo",
+                label="🤖 Modelo LLM",
+                values=opciones_modelos,
+                initial_index=indice_inicial,
+                description="Selecciona el modelo de IA para tu sesión.",
+            ),
+        ]
+    ).send()
+
+    # Guardar el modelo activo en la sesión del usuario
+    modelo_seleccionado = settings.get("modelo_activo", modelo_inicial)
+    cl.user_session.set("modelo_activo", modelo_seleccionado)
+
+    # Crear el LLM y la cadena para esta sesión
+    llm_sesion = get_llm(model_id=modelo_seleccionado, temperature=0.3)
+    chain_sesion = prompt_template | llm_sesion
+    cadena_sesion = RunnableWithMessageHistory(
+        chain_sesion,
+        get_session_history=obtener_historial,
+        input_messages_key="input",
+        history_messages_key="chat_history",
+    )
+    cl.user_session.set("cadena", cadena_sesion)
+
+    nombre_modelo = get_nombre_modelo(modelo_seleccionado)
+
     mensaje_bienvenida = (
         "# 🎓 **¡Bienvenido al Tutor Socrático de Programación e Ingeniería de Software!** 🧠\n\n"
         "Soy tu tutor virtual y te ayudaré a **aprender a pensar como ingeniero/a de software**, "
         "usando el método socrático.\n\n"
+        f"**Modelo activo:** {nombre_modelo}\n\n"
+        "> 💡 *Puedes cambiar el modelo en cualquier momento usando el ícono de "
+        "configuración (⚙️) en la barra del chat.*\n\n"
         "## 🎯 Foco de nuestras sesiones:\n\n"
         "Podemos profundizar en:\n"
         "- Lógica, algoritmos y estructuras de datos\n"
@@ -241,19 +255,72 @@ async def on_chat_start():
     ).send()
 
 
+@cl.on_settings_update
+async def on_settings_update(settings):
+    """
+    Manejador que se ejecuta cuando el usuario cambia la configuración
+    (selector de modelo) durante una sesión activa.
+    """
+    nuevo_modelo = settings.get("modelo_activo")
+    modelo_anterior = cl.user_session.get("modelo_activo", MODELO_POR_DEFECTO)
+
+    if nuevo_modelo and nuevo_modelo != modelo_anterior:
+        # Actualizar el modelo en la sesión
+        cl.user_session.set("modelo_activo", nuevo_modelo)
+
+        # Crear nuevo LLM y cadena
+        llm_nuevo = get_llm(model_id=nuevo_modelo, temperature=0.3)
+        chain_nueva = prompt_template | llm_nuevo
+        cadena_nueva = RunnableWithMessageHistory(
+            chain_nueva,
+            get_session_history=obtener_historial,
+            input_messages_key="input",
+            history_messages_key="chat_history",
+        )
+        cl.user_session.set("cadena", cadena_nueva)
+
+        nombre_anterior = get_nombre_modelo(modelo_anterior)
+        nombre_nuevo = get_nombre_modelo(nuevo_modelo)
+
+        await cl.Message(
+            content=(
+                f"🔄 **Modelo cambiado exitosamente**\n\n"
+                f"- Anterior: {nombre_anterior}\n"
+                f"- Nuevo: {nombre_nuevo}\n\n"
+                f"El historial de conversación se mantiene. "
+                f"Puedes seguir preguntando normalmente."
+            ),
+            author="Sistema",
+        ).send()
+
+        logger.info(
+            "Modelo cambiado: %s -> %s (sesión: %s)",
+            modelo_anterior,
+            nuevo_modelo,
+            cl.user_session.get("id"),
+        )
+
+
 @cl.on_message
 async def on_message(message: cl.Message):
     """
     Manejador que se ejecuta cuando el usuario envía un mensaje.
     Procesa la consulta, genera una respuesta socrática y la valida.
+    Usa la cadena almacenada en la sesión (que puede haber sido cambiada
+    por el selector de modelos).
     """
     session_id = cl.user_session.get("id")
+
+    # Obtener la cadena de la sesión (configurada con el modelo seleccionado)
+    cadena_activa = cl.user_session.get("cadena", cadena_con_historial)
 
     # Inicializar contador de intentos en la sesión si no existe
     intentos = cl.user_session.get("intentos", 0)
 
     # Mostrar mensaje de "pensando"
-    msg = cl.Message(content="🤔 Reflexionando sobre tu pregunta...")
+    modelo_activo = cl.user_session.get("modelo_activo", "")
+    nombre_modelo = get_nombre_modelo(modelo_activo) if modelo_activo else "LLM"
+    msg = cl.Message(content=f"🤔 Reflexionando sobre tu pregunta... ({nombre_modelo})")
     await msg.send()
 
     respuesta_final = None
@@ -261,12 +328,22 @@ async def on_message(message: cl.Message):
 
     # Intentar generar una respuesta válida (máximo 2 intentos)
     while intentos < 2 and not es_valida:
-        # Invocar la cadena con el historial de conversación
-        resultado = await cadena_con_historial.ainvoke(
-            {"input": message.content},
-            config={"configurable": {"session_id": session_id}},
-        )
-        respuesta_ia = resultado.content
+        try:
+            # Invocar la cadena con el historial de conversación
+            resultado = await cadena_activa.ainvoke(
+                {"input": message.content},
+                config={"configurable": {"session_id": session_id}},
+            )
+            respuesta_ia = resultado.content
+        except Exception as e:
+            logger.error("Error al invocar el LLM: %s", str(e))
+            respuesta_final = (
+                "⚠️ Hubo un problema al conectar con el modelo de IA. "
+                "Esto puede deberse a que el proxy OpenCode no está corriendo "
+                "o el modelo seleccionado no está disponible.\n\n"
+                + RESPUESTA_RESPALDO
+            )
+            break
 
         # Limpiar la respuesta de cualquier resto de código
         respuesta_limpia = limpiar_respuesta(respuesta_ia)
@@ -296,7 +373,7 @@ async def on_message(message: cl.Message):
             # Respuesta válida
             respuesta_final = respuesta_limpia
 
-    # Si después de 2 intentos aún no es válida (por si acaso), usar respaldo)
+    # Si después de 2 intentos aún no es válida (por si acaso), usar respaldo
     if respuesta_final is None:
         respuesta_final = RESPUESTA_RESPALDO
 
