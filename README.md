@@ -21,14 +21,6 @@ El Middleware Socrático es una herramienta educativa diseñada para fomentar el
 - Sistema de reintentos (hasta 2 intentos) y respaldo con preguntas genéricas
 - Listo para desplegar en Render (plan gratuito)
 
-## 📋 Requisitos Previos
-
-- **Python 3.8+ instalado
-- **Clave API de Google Gemini** (obténla en [Google AI Studio](https://aistudio.google.com/))
-- **Git** (para control de versiones y despliegue)
-- **Cuenta en GitHub** (para despliegue en Render)
-- **Cuenta en Render** (plan gratuito disponible)
-
 ## 🚀 Ejecución Local
 
 Sigue estos pasos para ejecutar el proyecto en tu máquina local:
@@ -84,53 +76,6 @@ El parámetro `-w` activa el modo watch para recargar automáticamente al detect
 
 La aplicación estará disponible en: **http://localhost:8000**
 
-## ☁️ Despliegue en Render (Plan Gratuito)
-
-### Paso 1: Preparar el repositorio en GitHub
-
-1. Crea un nuevo repositorio en GitHub (público o privado)
-2. Sube todos los archivos del proyecto al repositorio:
-
-```bash
-git init
-git add .
-git commit -m "Middleware Socrático inicial"
-git branch -M main
-git remote add origin https://github.com/TU_USUARIO/TU_REPOSITORIO.git
-git push -u origin main
-```
-
-> **Importante:** No subas el archivo `.env` a GitHub (ya está en `.gitignore`). La clave API se configurará directamente en Render.
-
-### Paso 2: Conectar Render con GitHub
-
-1. Ve a [render.com](https://render.com) y crea una cuenta o inicia sesión
-2. Haz clic en **"New +"** → **"Web Service"**
-3. Conecta tu cuenta de GitHub y selecciona el repositorio del proyecto
-4. Configura el servicio con los siguientes parámetros:
-
-| Campo | Valor |
-|-------|-------|
-| **Name** | El nombre que quieras darle a tu servicio |
-| **Region** | Selecciona la más cercana a ti |
-| **Branch** | `main` |
-| **Runtime** | `Python 3` |
-| **Build Command** | `pip install -r requirements.txt` |
-| **Start Command** | `chainlit run app.py --host 0.0.0.0 --port $PORT` |
-
-### Paso 3: Configurar variables de entorno
-
-En la sección **"Advanced"** → **"Environment Variables"**:
-
-1. Agrega una nueva variable:
-   - **Key:** `GOOGLE_API_KEY`
-   - **Value:** Tu clave API de Google Gemini
-
-### Paso 4: Desplegar
-
-1. Haz clic en **"Create Web Service"**
-2. Espera a que Render termine de construir y desplegar la aplicación (toma 2-5 minutos)
-3. Cuando el estado sea **"Live"**, haz clic en la URL proporcionada por Render para acceder a tu tutor
 
 ## 📁 Estructura del Proyecto
 
